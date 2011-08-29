@@ -5,9 +5,10 @@ from geopy.distance import distance as geodistance
 
 from configobj import ConfigObj, ConfigObjError
 
-import re
+import re, httplib2, socket
 
 from BeautifulSoup import BeautifulSoup
+
 
 ###############################################################################
 #
@@ -27,7 +28,6 @@ deal_keywords = []
 finaloutput = {}
 
 ###############################################################################
-import httplib2
 
 
 def read_config(configfile='scraper.ini'):
@@ -120,17 +120,18 @@ def get_distance(dest, start=None):
             start = start + ', ' + search_city
 
         g = geocoders.Google(domain='maps.google.co.in')
-        
 
-        _, start_coords = g.geocode(start)    
-        
+        print ("[DEBUG] | get_distance() | socket timeout is "
+                 + str(socket.getdefaulttimeout()) )
+
+        _, start_coords = list(g.geocode(start, exactly_one=False))[0]        
 
         # append 'search_city' to the destination string, if needed
         # ( not all location strings from dealsites contain city name)
         if search_city not in dest.lower() :
             dest = dest + ', ' + search_city
 
-        _, dest_coords = g.geocode(dest)
+        _, dest_coords = list(g.geocode(dest, exactly_one=False))[0]
 
         return geodistance(start_coords, dest_coords).kilometers
     except Exception, e:
@@ -148,42 +149,45 @@ def process_snapdeal():
     global config, finaloutput, search_city    
 
     sd_url = config['Deal Sites'] ['snapdeal'] ['start_url']
-
     snapdeal_url = re.sub(r'{search_city}', search_city, sd_url)
     
     print "[INFO] | process_snapdeal() | Going to URL: " + snapdeal_url
-
-    
     h = httplib2.Http('.cache')
-
     resp, content = h.request(snapdeal_url)
-
+    print "[INFO] | process_snapdeal() | Getting soup!"
     soup = BeautifulSoup(content)
 
-    
+    #initialize finaloutput's snapdeal list to an empty list for each keyword
+    for i in range(0, len(deal_keywords)):
 
-    reslist = soup.findAll(text=re.compile('gym membership', re.I))
+        print "[INFO] | process_snapdeal() | current keyword="+deal_keywords[i]
+        finaloutput[deal_keywords[i]]={}
+        finaloutput[deal_keywords[i]] ['snapdeal']=[]
 
-    #initialize finaloutput's snapdeal list to an empty list
-    finaloutput['snapdeal']=[]
+        print "[INFO] | process_snapdeal() | finding keyword in soup"
+        reslist = soup.findAll(text=re.compile(deal_keywords[i], re.I))
 
-    for result in reslist:
+        for result in reslist:
 
-        nextdiv = result.findNext('div')
+            print "[INFO] | process_snapdeal() | got result: " + result
+            nextdiv = result.findNext('div')
 
-        while 'location' not in str(nextdiv.attrs):
-            nextdiv = nextdiv.findNext('div')
+            while 'location' not in str(nextdiv.attrs):
+                nextdiv = nextdiv.findNext('div')
 
-        dist = "%.2f" % get_distance(nextdiv.string)
+            print("[INFO] | process_snapdeal() | getting distance to: " 
+                    + nextdiv.string)
+            dist = "%.2f" % get_distance(nextdiv.string)
+            print "[INFO] | process_snapdeal() | distance = " + dist
 
-        finaloutput['snapdeal'].append( 
-            { 
-                'deal':result, 
-                'location':nextdiv.string, 
-                'link':result.findPrevious('a')['href'],
-                'distance':dist
-            }
-        )
+            finaloutput[deal_keywords[i]] ['snapdeal'].append( 
+                { 
+                    'deal':result, 
+                    'location':nextdiv.string, 
+                    'link':result.findPrevious('a')['href'],
+                    'distance':dist
+                }
+            )
 
 
 
@@ -208,6 +212,8 @@ def process_snapdeal():
 def main():
     global search_city, search_location, deal_sites, deal_keywords
 
+    # set socket timeout to 5s, to prevent hanging in some geopy network calls 
+    socket.setdefaulttimeout(5.0)
 
     read_config()
 
