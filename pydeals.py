@@ -2,10 +2,9 @@
 
 from geopy import geocoders
 from geopy.distance import distance as geodistance
-
 from configobj import ConfigObj, ConfigObjError
 
-import re, httplib2, socket
+import re, httplib2, socket, pprint, yaml
 
 from BeautifulSoup import BeautifulSoup
 
@@ -25,7 +24,7 @@ deal_sites = None
 
 deal_keywords = []
 
-finaloutput = {}
+final_output = {}
 
 ###############################################################################
 
@@ -42,14 +41,35 @@ def read_config(configfile='scraper.ini'):
         the 'config' object parsed from the 'configfile'
 
     Raises:
+        Exception: if unexpected type parsed from configfile's 'deal_keywords'
         IOError: if the configfile could not be read
 
     """
 
 
     try:
+        global search_city, search_location, deal_sites, deal_keywords
         global config 
         config = ConfigObj(configfile, file_error=True)
+
+        search_city = config['Globals']['search_city']
+        search_location = config['Globals']['search_location']
+
+        deal_sites = config['Deal Sites'].keys()
+        print '[DEBUG] | read_config() | Dealsites = ' + str(deal_sites)
+
+        keywords = config['Globals']['deal_keywords']
+        
+        if(type(keywords)==list): # more than one keyword results in a list
+                deal_keywords = keywords
+        elif(type(keywords)==str): # only one keyword results in a string
+            if keywords not in [None, '']:
+                deal_keywords.append(keywords)
+        else:
+            raise Exception, ("Unexpected keyword type : "
+                              "Check 'deal_keywords' in configfile")
+        print '[DEBUG] | read_config() | Keywords = ' + str(deal_keywords)
+
     except (ConfigObjError, IOError), e:
         print '[ERROR] | read_config() for file:' + configfile + ' | ' + str(e)
     except Exception, e:
@@ -121,8 +141,6 @@ def get_distance(dest, start=None):
 
         g = geocoders.Google(domain='maps.google.co.in')
 
-        print ("[DEBUG] | get_distance() | socket timeout is "
-                 + str(socket.getdefaulttimeout()) )
 
         _, start_coords = list(g.geocode(start, exactly_one=False))[0]        
 
@@ -144,11 +162,47 @@ def get_distance(dest, start=None):
 
 
 
+
+
+
+
+def build_final_output(keyword, dealsite, deal_text, deal_location, 
+                      deal_link, deal_distance):
+    """
+    Example: build_final_output(
+                'gym', 
+                'snapdeal', 
+                'Rs 299 & get 1 month gym membership more worth Rs 5000',
+                'Koramangala, Bangalore',
+                17.05
+             )
+
+    """
+    global final_output
+
+    final_output[keyword][dealsite].append( 
+        { 
+            'deal_text': deal_text, 
+            'deal_location':deal_location, 
+            'deal_link':deal_link,
+            'deal_distance':deal_distance
+        }
+    )
+
+
+
+
+
+
+
+
+
+
 def process_snapdeal():
 
-    global config, finaloutput, search_city    
+    global config, final_output, search_city    
 
-    sd_url = config['Deal Sites'] ['snapdeal'] ['start_url']
+    sd_url = config['Deal Sites']['snapdeal']['start_url']
     snapdeal_url = re.sub(r'{search_city}', search_city, sd_url)
     
     print "[INFO] | process_snapdeal() | Going to URL: " + snapdeal_url
@@ -157,41 +211,75 @@ def process_snapdeal():
     print "[INFO] | process_snapdeal() | Getting soup!"
     soup = BeautifulSoup(content)
 
-    #initialize finaloutput's snapdeal list to an empty list for each keyword
-    for i in range(0, len(deal_keywords)):
 
-        print "[INFO] | process_snapdeal() | current keyword="+deal_keywords[i]
-        finaloutput[deal_keywords[i]]={}
-        finaloutput[deal_keywords[i]] ['snapdeal']=[]
+    def process_div_tags():
+        reslist=[]
+        for divtag in soup('div', {'class':'sidebar-deal-excerpt'}):   # soup.findAll('div', {"class" : "sidebar-deal-excerpt"} ):
+            if keyword in divtag.a.span.string.lower():
+                reslist.append(divtag.a)
 
-        print "[INFO] | process_snapdeal() | finding keyword in soup"
-        reslist = soup.findAll(text=re.compile(deal_keywords[i], re.I))
+        for deal in reslist:
+            print "[INFO] | process_snapdeal() | got result: " + deal.span.string
+            nextdiv = deal.findNext('div')
 
-        for result in reslist:
-
-            print "[INFO] | process_snapdeal() | got result: " + result
-            nextdiv = result.findNext('div')
-
-            while 'location' not in str(nextdiv.attrs):
-                nextdiv = nextdiv.findNext('div')
-
+            if nextdiv.attrs:
+                while 'location' not in str(nextdiv.attrs):
+                    nextdiv = nextdiv.findNext('div')
+            else:
+                continue    # skip div tags without attributes
+            
+            deal_location = nextdiv.string
             print("[INFO] | process_snapdeal() | getting distance to: " 
-                    + nextdiv.string)
-            dist = "%.2f" % get_distance(nextdiv.string)
-            print "[INFO] | process_snapdeal() | distance = " + dist
-
-            finaloutput[deal_keywords[i]] ['snapdeal'].append( 
-                { 
-                    'deal':result, 
-                    'location':nextdiv.string, 
-                    'link':result.findPrevious('a')['href'],
-                    'distance':dist
-                }
-            )
+                  + deal_location)
+            deal_distance = "%.2f" % get_distance(deal_location)
+            print "[INFO] | process_snapdeal() | distance = " + deal_distance
+    
+            build_final_output(keyword, 'snapdeal', deal.span.string, deal_location, deal.findPrevious('a')['href'], deal_distance)
 
 
 
 
+    def process_h2_tags():
+        reslist=[]
+        for h2tag in soup('h2', {'class':'deal-title'}):   # soup.findAll('h2', {'class' : 'deal-title'}):
+            if keyword in h2tag.string.lower():
+                reslist.append(h2tag.string)
+
+        for deal in reslist:
+            print "[INFO] | process_snapdeal() | got result: " + deal.string.strip()
+
+            prevtag = deal.findPrevious('h3')   # location is within a previous h3 tag
+
+            if prevtag.attrs:
+                while 'location' not in str(prevtag.attrs):
+                    prevtag = prevtag.findPrevious('h3')
+            else:
+                continue    # skip h3 tags without attributes
+
+            deal_location = prevtag.string
+            print("[INFO] | process_snapdeal() | getting distance to: "
+                  + deal_location)
+            deal_distance = "%.2f" % get_distance(deal_location)
+            print "[INFO] | process_snapdeal() | distance = " + deal_distance
+
+            build_final_output(keyword, 'snapdeal', deal.string.strip(), deal_location, deal.findNext('a', {'class':'buylink'})['href'], deal_distance)
+
+
+
+
+    #initialize final_output's snapdeal list to an empty list for each keyword
+    for i in range(0, len(deal_keywords)):
+        keyword = deal_keywords[i]
+
+        print("[INFO] | process_snapdeal() | current keyword = "
+              + keyword)
+        final_output[keyword]={}
+        final_output[keyword]['snapdeal']=[]
+        print "[INFO] | process_snapdeal() | finding '%s' in soup div tags" %(keyword)
+        process_div_tags()
+
+        print "[INFO] | process_snapdeal() | finding %s in soup h2 tags" %(keyword)
+        process_h2_tags()
 
 
 
@@ -200,6 +288,22 @@ def process_snapdeal():
 
 
 
+def pretty_print():
+    print '\n\n[INFO] | main() | final_output: \n\n' #+ str(final_output)
+    
+    pprint.pprint(final_output, indent=2, width=160)
+    
+
+    #print '\n\n[INFO] | main() | final_output: \n\n' 
+
+    # The yaml dump doesn't look that great on the default console, 
+    # but it looks awesome on the iPython console. It looks just as stunning 
+    # when printed to a file via dump(..., stream=outfile, ...)
+    # so will use this when logging is enabled to yaml.dump to the log file
+    #
+    #outfile = open('yaml.out.txt', 'w')
+    #yaml.safe_dump(final_output, stream=outfile, indent=4, default_flow_style=False, width=260, explicit_start=True, explicit_end=True)
+    #outfile.close()
 
 
 
@@ -210,29 +314,22 @@ def process_snapdeal():
 
 
 def main():
-    global search_city, search_location, deal_sites, deal_keywords
 
-    # set socket timeout to 5s, to prevent hanging in some geopy network calls 
-    socket.setdefaulttimeout(5.0)
+    try:
+        # set socket timeout to 5s
+        # to prevent getting stuck in network calls (especially from geopy)
+        socket.setdefaulttimeout(5.0)
+        print ("[DEBUG] | main() | socket timeout is "
+               + str(socket.getdefaulttimeout()) )
 
-    read_config()
+        read_config()
 
-    search_city = config['Globals']['search_city']
-    search_location = config['Globals']['search_location']
+        process_snapdeal()
 
-    deal_sites = config['Deal Sites'].keys()
+        pretty_print()
 
-    deal_keywords = config['Globals']['deal_keywords']
-
-    print '[DEBUG] | main() | Dealsites = ' + str(deal_sites)
-
-    # url1 = config['Deal Sites'] [deal_sites[0]] ['start_url']
-    # print "Going to URL: %s" %(url1)
-
-    process_snapdeal()
-
-    print '\n\n[INFO] | main() | finaloutput: ' + str(finaloutput)
-
+    except Exception, e:
+        print "[ERROR]: main() : " + str(e)
 
 
 
