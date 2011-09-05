@@ -3,18 +3,19 @@
 from geopy import geocoders
 from geopy.distance import distance as geodistance
 from configobj import ConfigObj, ConfigObjError
-
-import re, httplib2, socket, pprint, yaml
-
 from BeautifulSoup import BeautifulSoup
-
+import re, httplib2, socket, pprint, logging
+from colorformatter import ColorFormatter as ColorFormatter
 
 ###############################################################################
 #
 # GLOBALS
-
+#
+###############################################################################
 
 config = None
+
+logger = None
 
 search_location = None
 
@@ -26,7 +27,41 @@ deal_keywords = []
 
 final_output = {}
 
+
+
 ###############################################################################
+
+
+
+
+def setup_logging(filename, filemode='a'):
+    # Setup the color logging facility
+    
+    myformat = ('$COLOR%(asctime)s - %(levelname)-8s - ' 
+                 '%(funcName)s:%(lineno)d - %(message)s$RESET')
+
+    
+    logging.basicConfig(
+        level = logging.DEBUG,
+        format = ('%(asctime)s [%(levelname)-8s] '
+                  '(%(module)s:%(funcName)s:%(lineno)d) %(message)s'),
+        filename = filename,
+        filemode = filemode
+    )
+
+    # Send some logging info to the console
+    console = logging.StreamHandler()
+    console.setLevel(logging.INFO)
+    console.setFormatter(ColorFormatter(use_color=True, format_string=myformat))
+    logging.getLogger().addHandler(console)
+
+    # The log object to use
+    return logging.getLogger('pydeals')
+
+
+
+
+
 
 
 def read_config(configfile='scraper.ini'):
@@ -56,7 +91,7 @@ def read_config(configfile='scraper.ini'):
         search_location = config['Globals']['search_location']
 
         deal_sites = config['Deal Sites'].keys()
-        print '[DEBUG] | read_config() | Dealsites = ' + str(deal_sites)
+        logger.debug('Dealsites = ' + str(deal_sites))
 
         keywords = config['Globals']['deal_keywords']
         
@@ -68,12 +103,12 @@ def read_config(configfile='scraper.ini'):
         else:
             raise Exception, ("Unexpected keyword type : "
                               "Check 'deal_keywords' in configfile")
-        print '[DEBUG] | read_config() | Keywords = ' + str(deal_keywords)
+        logger.debug('Keywords = ' + str(deal_keywords))
 
     except (ConfigObjError, IOError), e:
-        print '[ERROR] | read_config() for file:' + configfile + ' | ' + str(e)
+        logger.critical('file: ' + configfile + str(e))
     except Exception, e:
-        print '[ERROR] | read_config() | ' + str(e)
+        logger.critical(str(e))
     
 
 
@@ -153,7 +188,7 @@ def get_distance(dest, start=None):
 
         return geodistance(start_coords, dest_coords).kilometers
     except Exception, e:
-        print '[ERROR] | get_distance() | ' + str(e)
+        logger.error(str(e))
 
 
 
@@ -205,10 +240,10 @@ def process_snapdeal():
     sd_url = config['Deal Sites']['snapdeal']['start_url']
     snapdeal_url = re.sub(r'{search_city}', search_city, sd_url)
     
-    print "[INFO] | process_snapdeal() | Going to URL: " + snapdeal_url
+    logger.info("Going to URL: " + snapdeal_url)
     h = httplib2.Http('.cache')
-    resp, content = h.request(snapdeal_url)
-    print "[INFO] | process_snapdeal() | Getting soup!"
+    _, content = h.request(snapdeal_url)
+    logger.debug("Getting soup!")
     soup = BeautifulSoup(content)
 
 
@@ -219,7 +254,7 @@ def process_snapdeal():
                 reslist.append(divtag.a)
 
         for deal in reslist:
-            print "[INFO] | process_snapdeal() | got result: " + deal.span.string
+            logger.info("got result: " + deal.span.string.strip())
             nextdiv = deal.findNext('div')
 
             if nextdiv.attrs:
@@ -228,13 +263,12 @@ def process_snapdeal():
             else:
                 continue    # skip div tags without attributes
             
-            deal_location = nextdiv.string
-            print("[INFO] | process_snapdeal() | getting distance to: " 
-                  + deal_location)
+            deal_location = nextdiv.string.strip()
+            logger.debug("getting distance to: " + deal_location)
             deal_distance = "%.2f" % get_distance(deal_location)
-            print "[INFO] | process_snapdeal() | distance = " + deal_distance
+            logger.info("distance to %s = %s" %(deal_location, deal_distance))
     
-            build_final_output(keyword, 'snapdeal', deal.span.string, deal_location, deal.findPrevious('a')['href'], deal_distance)
+            build_final_output(keyword, 'snapdeal', deal.span.string.strip(), deal_location, deal.findPrevious('a')['href'], deal_distance)
 
 
 
@@ -246,7 +280,7 @@ def process_snapdeal():
                 reslist.append(h2tag.string)
 
         for deal in reslist:
-            print "[INFO] | process_snapdeal() | got result: " + deal.string.strip()
+            logger.info("got result: " + deal.string.strip())
 
             prevtag = deal.findPrevious('h3')   # location is within a previous h3 tag
 
@@ -256,11 +290,10 @@ def process_snapdeal():
             else:
                 continue    # skip h3 tags without attributes
 
-            deal_location = prevtag.string
-            print("[INFO] | process_snapdeal() | getting distance to: "
-                  + deal_location)
+            deal_location = prevtag.string.strip()
+            logger.debug("getting distance to: " + deal_location)
             deal_distance = "%.2f" % get_distance(deal_location)
-            print "[INFO] | process_snapdeal() | distance = " + deal_distance
+            logger.info("distance to %s = %s" %(deal_location, deal_distance))
 
             build_final_output(keyword, 'snapdeal', deal.string.strip(), deal_location, deal.findNext('a', {'class':'buylink'})['href'], deal_distance)
 
@@ -271,14 +304,13 @@ def process_snapdeal():
     for i in range(0, len(deal_keywords)):
         keyword = deal_keywords[i]
 
-        print("[INFO] | process_snapdeal() | current keyword = "
-              + keyword)
+        logger.info("$GREENprocessing keyword: " + keyword)
         final_output[keyword]={}
         final_output[keyword]['snapdeal']=[]
-        print "[INFO] | process_snapdeal() | finding '%s' in soup div tags" %(keyword)
+        logger.info("finding '%s' in soup div tags" %(keyword))
         process_div_tags()
 
-        print "[INFO] | process_snapdeal() | finding %s in soup h2 tags" %(keyword)
+        logger.info("finding %s in soup h2 tags" %(keyword))
         process_h2_tags()
 
 
@@ -289,9 +321,8 @@ def process_snapdeal():
 
 
 def pretty_print():
-    print '\n\n[INFO] | main() | final_output: \n\n' #+ str(final_output)
     
-    pprint.pprint(final_output, indent=2, width=160)
+    logger.info('\n\nfinal_output:\n' + pprint.pformat(final_output, indent=2, width=160))
     
 
     #print '\n\n[INFO] | main() | final_output: \n\n' 
@@ -315,12 +346,16 @@ def pretty_print():
 
 def main():
 
+    global logger
+
     try:
+        logger = setup_logging('./pydeals.log', 'a')
+
         # set socket timeout to 5s
         # to prevent getting stuck in network calls (especially from geopy)
         socket.setdefaulttimeout(5.0)
-        print ("[DEBUG] | main() | socket timeout is "
-               + str(socket.getdefaulttimeout()) )
+        
+        logger.debug("socket timeout is " + str(socket.getdefaulttimeout()))
 
         read_config()
 
@@ -329,7 +364,7 @@ def main():
         pretty_print()
 
     except Exception, e:
-        print "[ERROR]: main() : " + str(e)
+        logger.error(str(e))
 
 
 
